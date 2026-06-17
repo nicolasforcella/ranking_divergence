@@ -136,27 +136,12 @@ validated paper-grade reproduction.
 - Validate the OpenWebText pipeline against DUO outputs on a sufficiently large
   run, not just smoke tests.
 - Investigate why `gpt2` scored by `gpt2-large` may underperform naive baselines
-  in current OpenWebText analysis outputs. This should not be happening and is
+  in current OpenWebText analysis outputs, both on ranking and gen ppl / entropy. This should not be happening and is
   most likely a bug in generation, token handling, evaluation masking, metric
   aggregation, sample size, or baseline comparability.
-- Decide whether GPT-2 generated samples should be forced to exactly 1024 tokens
-  by using a prompt/continuation protocol instead of natural EOS stopping. The
-  current behavior avoids EOS padding artifacts but may produce variable-length
-  GPT-2 samples.
-- Confirm that rank histograms, gen-PPL, entropy, and n-gram metrics all use
-  precisely the intended token source: raw generated token IDs vs decoded and
-  re-tokenized text.
-- Add tests for DUO-style generative perplexity masking, especially EOS and
-  padding edge cases.
-- Add tests or diagnostics that assert generated token lengths and EOS counts for
-  each generator/configuration.
 - Cache and optionally reuse the held-out reference rank histogram across runs.
-- Add a plot/table regression fixture from a tiny deterministic fake model so
-  output formatting can be tested without OpenWebText or GPT downloads.
 - Consider a token-ID-first evaluation mode for rank histograms and gen-PPL to
   avoid decode/re-tokenize drift when the generator and scorer tokenizers match.
-- Document expected metric ranges for known sanity cases once the full pipeline
-  is validated.
 
 ## Development
 
