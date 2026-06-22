@@ -1,0 +1,15 @@
+{
+  "batch_size": 16,
+  "cache_dir": "/home/patrick/.cache/discrete_diffusion/owt",
+  "created_utc": "2026-06-22T15:14:38.612666+00:00",
+  "device": "cuda",
+  "limit_samples": null,
+  "max_length": 1024,
+  "num_reference": 128,
+  "rank_position_chunk": 64,
+  "reference_split": "train[-100000:]",
+  "scorer_model": "gpt2-large",
+  "sweeps": {
+    "ar": "/data/remote_cache/patrick/discrete_diffusion/openwebtext-train/2026.06.22/004711"
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "generator_model": "gpt2",
+  "scorer_model": "gpt2-large",
+  "seed": 13,
+  "num_samples": 8,
+  "requested_sample_length": 1024,
+  "generated_token_lengths": [
+    445,
+    218,
+    2,
+    499,
+    763,
+    87,
+    1024,
+    374
+  ],
+  "mean_per_sample_unigram_entropy_nats": 4.678792116148084,
+  "token_weighted_per_sample_unigram_entropy_nats": 5.606136379028316,
+  "pooled_unigram_entropy_nats": 6.779107025025974,
+  "per_sample_unigram_entropies_nats": [
+    5.219983714591278,
+    5.006780762254252,
+    0.6931471805599453,
+    5.224520911375632,
+    5.5772633317081795,
+    4.119256648872437,
+    6.395518658989976,
+    5.1938657208329655
+  ],
+  "repo_gen_ppl": 203.99124145507812,
+  "repo_duo_gen_ppl": 203.99124145507812,
+  "hf_mean_perplexity": 224.287944316864,
+  "hf_token_weighted_perplexity": 203.9652641117314,
+  "hf_per_sample_perplexities": [
+    112.6439208984375,
+    225.4630126953125,
+    79.46310424804688,
+    54.38172912597656,
+    174.0263671875,
+    195.9990997314453,
+    896.54052734375,
+    55.78579330444336
+  ],
+  "scored_token_counts": [
+    444,
+    217,
+    1,
+    498,
+    760,
+    85,
+    1019,
+    373
+  ],
+  "sample_previews": [
+    ".Is this imaginary laboratory photo actually real? Look out the window!\n\nEvolvers. It's cool, it's pleasant. It makes me only want to laugh.\n\nGood cleanup. The \"record book type\" that I love would nev",
+    "This would be as easy as adding a garage door--ie on a house, bedroom, or garage--to decorate take center stage between your main driveway and your trade-in parties.\n\nHay Tub - Original\n\nAs there are ",
+    ".<|endoftext|>"
+  ]
+}

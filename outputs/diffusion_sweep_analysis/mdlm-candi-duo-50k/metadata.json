@@ -1,0 +1,17 @@
+{
+  "batch_size": 8,
+  "cache_dir": "/home/patrick/.cache/discrete_diffusion/owt",
+  "created_utc": "2026-06-22T07:42:00.430174+00:00",
+  "device": "cuda",
+  "limit_samples": null,
+  "max_length": 1024,
+  "num_reference": 128,
+  "rank_position_chunk": 64,
+  "reference_split": "train[-100000:]",
+  "scorer_model": "gpt2-large",
+  "sweeps": {
+    "candi": "/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/candi-orig-50k",
+    "duo": "/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/duo-50k",
+    "mdlm": "/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/mdlm-50k"
+  }
+}

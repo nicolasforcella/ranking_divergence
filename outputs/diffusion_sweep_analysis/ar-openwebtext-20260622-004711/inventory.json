@@ -1,0 +1,32 @@
+{
+  "methods": {
+    "ar": {
+      "directory": "/data/remote_cache/patrick/discrete_diffusion/openwebtext-train/2026.06.22/004711",
+      "missing_grid_points": [],
+      "nfes": [
+        64
+      ],
+      "num_files": 17,
+      "temperature_labels": [
+        "0.600",
+        "0.625",
+        "0.650",
+        "0.675",
+        "0.700",
+        "0.725",
+        "0.750",
+        "0.775",
+        "0.800",
+        "0.825",
+        "0.850",
+        "0.875",
+        "0.900",
+        "0.925",
+        "0.950",
+        "0.975",
+        "1.000"
+      ]
+    }
+  },
+  "num_files": 17
+}

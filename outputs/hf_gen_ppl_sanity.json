@@ -1,0 +1,46 @@
+{
+  "generator_model": "gpt2",
+  "scorer_model": "gpt2-large",
+  "seed": 13,
+  "num_samples": 8,
+  "requested_sample_length": 256,
+  "generated_token_lengths": [
+    256,
+    218,
+    2,
+    256,
+    256,
+    87,
+    256,
+    256
+  ],
+  "repo_gen_ppl": 113.10324096679688,
+  "repo_duo_gen_ppl": 113.10324096679688,
+  "hf_mean_perplexity": 145.43053245544434,
+  "hf_token_weighted_perplexity": 113.08630284461896,
+  "hf_per_sample_perplexities": [
+    132.62353515625,
+    225.46311950683594,
+    79.46295166015625,
+    72.85740661621094,
+    43.89519119262695,
+    195.9991912841797,
+    356.7012939453125,
+    56.44157028198242
+  ],
+  "scored_token_counts": [
+    255,
+    217,
+    1,
+    255,
+    254,
+    85,
+    255,
+    255
+  ],
+  "sample_previews": [
+    ".Is this imaginary laboratory photo actually real? Look out the window!\n\nEvolvers. It's cool, it's pleasant. It makes me only want to laugh.\n\nGood cleanup. The \"record book type\" that I love would nev",
+    "This would be as easy as adding a garage door--ie on a house, bedroom, or garage--to decorate take center stage between your main driveway and your trade-in parties.\n\nHay Tub - Original\n\nAs there are ",
+    ".<|endoftext|>"
+  ]
+}

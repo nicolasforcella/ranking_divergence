@@ -1,0 +1,10 @@
+{
+  "cache_dir": "/home/patrick/.cache/discrete_diffusion/owt",
+  "num_sampler_source": 4096,
+  "num_samples": 128,
+  "reference_histogram": "outputs/diffusion_sweep_analysis/mdlm-candi-duo-50k/reference_rank_histogram.pt",
+  "sample_length": 1024,
+  "sampler_source_split": "train[:-100000]",
+  "scorer_model": "gpt2-large",
+  "seed": 13
+}

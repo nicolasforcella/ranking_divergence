@@ -1,0 +1,29 @@
+{
+  "seed": 13,
+  "sample_length": 1024,
+  "num_samples": 16,
+  "num_reference": 128,
+  "num_sampler_source": 4096,
+  "scorer_model": "gpt2-large",
+  "generator_model": "gpt2",
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "generator_top_k": 0,
+  "generator_do_sample": true,
+  "generator_eos_token_id": 50256,
+  "generator_stops_at_eos": true,
+  "sampler_parameters": {
+    "top_k": 64,
+    "mirror_k": 5000,
+    "periodic_k": 400,
+    "phrase_bank_m": 5000,
+    "phrase_bank_n": 5
+  },
+  "splits": {
+    "sampler_source_split": "train[:-100000]",
+    "heldout_split": "train[-100000:]",
+    "scratch_dir": "/home/patrick/.cache/discrete_diffusion",
+    "cache_dir": "/home/patrick/.cache/discrete_diffusion/owt",
+    "reference_split": "train[-100000:]"
+  }
+}

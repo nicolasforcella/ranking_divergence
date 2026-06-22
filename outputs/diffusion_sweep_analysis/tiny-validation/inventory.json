@@ -1,0 +1,16 @@
+{
+  "methods": {
+    "candi": {
+      "directory": "/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/candi-orig-50k",
+      "missing_grid_points": [],
+      "nfes": [
+        8
+      ],
+      "num_files": 1,
+      "temperature_labels": [
+        "0.100"
+      ]
+    }
+  },
+  "num_files": 1
+}
