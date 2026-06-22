@@ -28,6 +28,61 @@ result = rank_wasserstein(
 print(result.distance)
 ```
 
+## Results
+
+The full numerical discussion is in
+[docs/important_results.md](docs/important_results.md). The main result is that
+rank-Wasserstein favors an intermediate generation regime: it penalizes both
+low-temperature repetitive collapse and high-temperature unlikely token
+choices.
+
+### Autoregressive temperature sweep
+
+The AR sweep has a clear V-shaped rank-distance curve. At temperature 0.60,
+rank-Wasserstein is 0.978 and Rep-3 is 0.593; the best match occurs at
+temperature 0.90 with rank-Wasserstein 0.0261; by temperature 1.00 the distance
+rises to 0.610.
+
+![AR entropy, generative perplexity, and rank-Wasserstein across temperature](docs/figures/ar_metric_summary.png)
+
+### Diffusion model sweeps
+
+MDLM, CANDI, and DUO show the same broad behavior: low-temperature
+concentration and high-temperature distributional drift both worsen the rank
+match. DUO gives the strongest results, reaching rank-Wasserstein 0.0239 at NFE
+32 and temperature 0.625.
+
+![MDLM temperature and NFE sweep](docs/figures/mdlm_metric_summary.png)
+
+![CANDI temperature and NFE sweep](docs/figures/candi_metric_summary.png)
+
+![DUO temperature and NFE sweep](docs/figures/duo_metric_summary.png)
+
+### Cross-method comparison
+
+The following summary selects the temperature with the lowest rank-Wasserstein
+for each method and NFE. AR is shown at the requested comparison cost of NFE
+128.
+
+![Entropy, generative perplexity, and rank-Wasserstein across methods and NFE](docs/figures/all_metrics_efficiency_summary.png)
+
+The efficiency frontier is formed by DUO at NFE 8, 16, and 32. DUO at NFE 32
+slightly outperforms both DUO and AR at NFE 128.
+
+![Rank-Wasserstein efficiency Pareto frontier](docs/figures/rank_wasserstein_efficiency_pareto.png)
+
+### Parameter-free baselines
+
+The parameter-free samplers were evaluated with 128 generations each. Periodic
+is the strongest of these baselines at rank-Wasserstein 1.092, but remains much
+farther from the held-out rank distribution than the learned models.
+
+![Parameter-free sampler entropy, generative perplexity, and rank-Wasserstein](docs/figures/parameter_free_metrics_summary.png)
+
+### Metric tradeoffs
+
+![All configurations plotted across entropy, generative perplexity, and rank-Wasserstein](docs/figures/all_metric_tradeoffs.png)
+
 ## Install
 
 ```bash
