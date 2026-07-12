@@ -59,6 +59,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-plots", action="store_true")
     parser.add_argument("--plot-only", action="store_true")
     parser.add_argument("--metrics-csv", type=Path, default=None)
+    parser.add_argument("--cache-scorer", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -306,17 +307,28 @@ def main(argv: Sequence[str] | None = None) -> None:
     scorer = AutoModelForCausalLM.from_pretrained(args.scorer_model)
     scorer = scorer.to(args.device).eval()
 
-    print("Computing held-out reference rank histogram...")
-    reference_histogram = rank_histogram(
-        reference_texts,
-        scorer,
-        tokenizer,
-        batch_size=args.batch_size,
-        max_length=args.sample_length,
-        device=args.device,
-        normalize=True,
-        show_progress=True,
-    )
+    safe_scorer_name = args.scorer_model.replace("/", "__")
+    cache_path = Path("cache/reference_histograms") / f"{safe_scorer_name}_owt.pt"
+
+    if cache_path.exists() and args.cache_scorer:
+        print(f"Loading cached reference rank histogram from {cache_path}...")
+        reference_histogram = torch.load(cache_path, map_location="cpu", weights_only=True)
+    else:
+        print("Computing held-out reference rank histogram...")
+        reference_histogram = rank_histogram(
+            reference_texts,
+            scorer,
+            tokenizer,
+            batch_size=args.batch_size,
+            max_length=args.sample_length,
+            device=args.device,
+            normalize=True,
+            show_progress=True,
+        )
+        if args.cache_scorer:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(reference_histogram, cache_path)
+            print(f"Cached reference rank histogram to {cache_path}")
 
     print(f"Generating from {args.generator_model}...")
     generator_tokenizer = AutoTokenizer.from_pretrained(args.generator_model)
