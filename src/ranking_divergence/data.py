@@ -35,7 +35,7 @@ def load_openwebtext_texts(
         raise ImportError("Install examples dependencies with `uv pip install -e '.[examples]'`.") from exc
 
     dataset = datasets.load_dataset(
-        "openwebtext",
+        "Skylion007/openwebtext",
         split=split,
         cache_dir=cache_dir,
         streaming=streaming,
