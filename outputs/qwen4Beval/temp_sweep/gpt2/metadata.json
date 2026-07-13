@@ -1,0 +1,15 @@
+{
+  "batch_size": 2,
+  "cache_dir": "/kaggle/tmp/huggingface_cache/owt",
+  "created_utc": "2026-07-12T18:35:23.668552+00:00",
+  "device": "cuda",
+  "limit_samples": null,
+  "max_length": 1024,
+  "num_reference": 128,
+  "rank_position_chunk": 64,
+  "reference_split": "train[-100000:]",
+  "scorer_model": "Qwen/Qwen3.5-4B",
+  "sweeps": {
+    "ar": "cache/generated_texts/gpt2"
+  }
+}
