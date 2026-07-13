@@ -178,6 +178,10 @@ def load_checkpoints(checkpoint_dir: Path) -> list[dict]:
         for path in sorted(checkpoint_dir.glob("*.json"))
     ]
 
+def save_histogram(path: Path, histogram: torch.Tensor) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(histogram.detach().to(dtype=torch.float64, device="cpu"), path)
+
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
@@ -189,6 +193,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     run_dir = run_dir_for(args)
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    histogram_dir = run_dir / "histograms"
+    histogram_dir.mkdir(parents=True, exist_ok=True)
     inventory_payload = inventory(files)
     write_json(run_dir / "inventory.json", inventory_payload)
     print(json.dumps(inventory_payload, indent=2))
@@ -272,6 +278,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             device=args.device,
             description=item.key,
         )
+        histogram_path = histogram_dir / f"{item.key}.pt"
+        save_histogram(histogram_path, comparison_histogram)
+
         temperature = float(source.get("temperature", item.temperature_label))
         row = {
             "method": item.method,
