@@ -83,6 +83,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             temperature=temperature,
             top_p=args.top_p,
             batch_size=args.batch_size,
+            cache_implementation="static"
         )
 
         eos_token_id = tokenizer.eos_token_id
