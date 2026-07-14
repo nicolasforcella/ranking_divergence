@@ -49,6 +49,7 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
             top_k=0,
             temperature=temperature,
             pad_token_id=tokenizer.eos_token_id,
+            cache_implementation="static"
         )
         xm.mark_step()
         all_ids.extend(output[:, 1:].detach().cpu().tolist())
@@ -83,7 +84,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             temperature=temperature,
             top_p=args.top_p,
             batch_size=args.batch_size,
-            cache_implementation="static"
         )
 
         eos_token_id = tokenizer.eos_token_id
