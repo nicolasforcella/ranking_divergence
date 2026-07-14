@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Sequence
 
 import torch
+import torch_xla
 import torch_xla.core.xla_model as xm
+import torch_xla.distributed.xla_multiprocessing as xmp
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -51,29 +53,30 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
             pad_token_id=tokenizer.eos_token_id,
             cache_implementation="static"
         )
-        xm.mark_step()
+        torch_xla.sync()
         all_ids.extend(output[:, 1:].detach().cpu().tolist())
         remaining -= n
     return all_ids
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    args = parse_args(argv)
+def _worker(rank: int, args: argparse.Namespace) -> None:
     device = xm.xla_device()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    num_cores = xm.xrt_world_size()
 
-    print(f"Loading {args.generator_model}...")
+    if xm.is_master_ordinal():
+        print(f"Loading {args.generator_model} ({num_cores} cores)...")
     tokenizer = AutoTokenizer.from_pretrained(args.generator_model)
     tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(args.generator_model).to(device).eval()
 
-    for temperature in args.temperatures:
+    my_temps = args.temperatures[rank::num_cores]
+    for temperature in my_temps:
         out_path = args.output_dir / f"samples_steps{args.steps_label}_temp{temperature:.3f}.json"
         if out_path.exists() and not args.force:
-            print(f"Skipping existing {out_path}")
+            print(f"[core {rank}] Skipping existing {out_path}")
             continue
 
-        print(f"Generating temperature={temperature} -> {out_path}")
+        print(f"[core {rank}] Generating temperature={temperature} -> {out_path}")
         token_ids = generate_batch(
             model,
             tokenizer,
@@ -106,7 +109,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         }
         out_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    print("Done.")
+    torch_xla.sync(wait=True)
+    if xm.is_master_ordinal():
+        print("Done.")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    xmp.spawn(_worker, args=(args,))
 
 
 if __name__ == "__main__":
