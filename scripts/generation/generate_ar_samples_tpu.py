@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 import torch
+import torch_xla.core.xla_model as xm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -18,7 +19,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--device", default="auto")
     parser.add_argument("--steps-label", type=int, default=64)
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
@@ -29,12 +29,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                   0.85, 0.875, 0.90, 0.925, 0.95, 0.975, 1.00],
     )
     return parser.parse_args(argv)
-
-
-def resolve_device(value: str) -> str:
-    if value != "auto":
-        return value
-    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def generate_batch(model, tokenizer, *, num_samples, length, device, seed, temperature, top_p, batch_size):
@@ -49,12 +43,14 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=length,
+            min_new_tokens=length,  # static output shape avoids XLA recompilation
             do_sample=True,
             top_p=top_p,
             top_k=0,
             temperature=temperature,
             pad_token_id=tokenizer.eos_token_id,
         )
+        xm.mark_step()
         all_ids.extend(output[:, 1:].detach().cpu().tolist())
         remaining -= n
     return all_ids
@@ -62,7 +58,7 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    device = resolve_device(args.device)
+    device = xm.xla_device()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading {args.generator_model}...")
