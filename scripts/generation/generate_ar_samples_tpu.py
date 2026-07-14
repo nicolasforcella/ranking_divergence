@@ -35,7 +35,6 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
     torch.manual_seed(seed)
     all_ids: list[list[int]] = []
     remaining = num_samples
-    temperature_t = torch.tensor(temperature, device=device)
     while remaining > 0:
         n = min(batch_size, remaining)
         input_ids = torch.full((n, 1), tokenizer.eos_token_id, dtype=torch.long, device=device)
@@ -48,7 +47,7 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
             do_sample=True,
             top_p=top_p,
             top_k=0,
-            temperature=temperature_t,
+            temperature=temperature,
             pad_token_id=tokenizer.eos_token_id,
             cache_implementation="static"
         )
