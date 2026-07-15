@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Sequence
+import os
 
 import torch
 import torch_xla
@@ -117,6 +118,8 @@ def _worker(rank: int, args: argparse.Namespace) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
+    for var in ("TPU_PROCESS_ADDRESSES", "TPU_MESH_CONTROLLER_ADDRESS", "TPU_MESH_CONTROLLER_PORT"):
+        os.environ.pop(var, None)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     xmp.spawn(_worker, args=(args,))
 
