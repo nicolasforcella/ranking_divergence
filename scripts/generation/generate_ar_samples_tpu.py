@@ -9,6 +9,7 @@ import torch
 import torch_xla
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
+import torch_xla.runtime as xr
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -61,9 +62,9 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
 
 def _worker(rank: int, args: argparse.Namespace) -> None:
     device = xm.xla_device()
-    num_cores = xm.xrt_world_size()
+    num_cores = xr.world_size()
 
-    if xm.is_master_ordinal():
+    if xr.global_ordinal() == 0:
         print(f"Loading {args.generator_model} ({num_cores} cores)...")
     tokenizer = AutoTokenizer.from_pretrained(args.generator_model)
     tokenizer.pad_token = tokenizer.eos_token
@@ -110,7 +111,7 @@ def _worker(rank: int, args: argparse.Namespace) -> None:
         out_path.write_text(json.dumps(payload), encoding="utf-8")
 
     torch_xla.sync(wait=True)
-    if xm.is_master_ordinal():
+    if xr.global_ordinal() == 0:
         print("Done.")
 
 
