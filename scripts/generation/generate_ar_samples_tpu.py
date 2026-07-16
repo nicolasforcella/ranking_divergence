@@ -4,13 +4,10 @@ import argparse
 import json
 from pathlib import Path
 from typing import Sequence
-import os
 
 import torch
 import torch_xla
 import torch_xla.core.xla_model as xm
-import torch_xla.distributed.xla_multiprocessing as xmp
-import torch_xla.runtime as xr
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -61,24 +58,23 @@ def generate_batch(model, tokenizer, *, num_samples, length, device, seed, tempe
     return all_ids
 
 
-def _worker(rank: int, args: argparse.Namespace) -> None:
-    device = xm.xla_device()
-    num_cores = xr.world_size()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    if xr.global_ordinal() == 0:
-        print(f"Loading {args.generator_model} ({num_cores} cores)...")
+    device = xm.xla_device()
+    print(f"Loading {args.generator_model}...")
     tokenizer = AutoTokenizer.from_pretrained(args.generator_model)
     tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(args.generator_model).to(device).eval()
 
-    my_temps = args.temperatures[rank::num_cores]
-    for temperature in my_temps:
+    for temperature in args.temperatures:
         out_path = args.output_dir / f"samples_steps{args.steps_label}_temp{temperature:.3f}.json"
         if out_path.exists() and not args.force:
-            print(f"[core {rank}] Skipping existing {out_path}")
+            print(f"Skipping existing {out_path}")
             continue
 
-        print(f"[core {rank}] Generating temperature={temperature} -> {out_path}")
+        print(f"Generating temperature={temperature} -> {out_path}")
         token_ids = generate_batch(
             model,
             tokenizer,
@@ -112,16 +108,7 @@ def _worker(rank: int, args: argparse.Namespace) -> None:
         out_path.write_text(json.dumps(payload), encoding="utf-8")
 
     torch_xla.sync(wait=True)
-    if xr.global_ordinal() == 0:
-        print("Done.")
-
-
-def main(argv: Sequence[str] | None = None) -> None:
-    args = parse_args(argv)
-    for var in ("TPU_PROCESS_ADDRESSES", "TPU_MESH_CONTROLLER_ADDRESS", "TPU_MESH_CONTROLLER_PORT"):
-        os.environ.pop(var, None)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    xmp.spawn(_worker, args=(args,))
+    print("Done.")
 
 
 if __name__ == "__main__":
