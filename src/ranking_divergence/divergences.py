@@ -199,15 +199,17 @@ def cdf_l2(reference, comparison) -> float:
 def _average_ranks(values: torch.Tensor) -> torch.Tensor:
     order = torch.argsort(values)
     sorted_values = values[order]
+    num_elem = values.numel()
+    if num_elem == 0:
+        return torch.empty_like(values)
+    starts_mask = torch.ones(num_elem, dtype=torch.bool)
+    starts_mask[1:] = sorted_values[1:] != sorted_values[:-1]
+    group = torch.cumsum(starts_mask, 0) - 1
+    starts = torch.nonzero(starts_mask, as_tuple=True)[0]
+    stops = torch.cat([starts[1:], torch.tensor([num_elem])])
+    group_ranks = (0.5 * (starts + stops - 1) + 1.0).to(values.dtype)
     ranks = torch.empty_like(values)
-    start = 0
-    n = values.numel()
-    while start < n:
-        stop = start + 1
-        while stop < n and sorted_values[stop] == sorted_values[start]:
-            stop += 1
-        ranks[order[start:stop]] = 0.5 * (start + stop - 1) + 1.0
-        start = stop
+    ranks[order] = group_ranks[group]
     return ranks
 
 
