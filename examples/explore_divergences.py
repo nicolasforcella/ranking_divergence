@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import statistics
 from pathlib import Path
 from typing import Sequence
 
@@ -64,6 +65,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/divergence_exploration"))
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument("--per-sample", help="Indicates that histograms where computed per sample.", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -131,6 +133,12 @@ def load_histogram(path: Path) -> torch.Tensor:
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
+def densify(histogram: torch.Tensor) -> torch.Tensor:
+    """Per-sample histograms are saved CSR-compressed; older runs are dense."""
+
+    return histogram if histogram.layout == torch.strided else histogram.to_dense()
+
+
 def merge_distributional_metrics(rows: list[dict], run_dir: Path) -> None:
     """Attach MAUVE/GM (from evaluate_distributional_metrics.py) onto rows by histogram key."""
 
@@ -171,7 +179,7 @@ def merge_de_fmtyp(rows: list[dict], run_dir: Path) -> None:
     print(f"Attached DE/FMTyp-p to {matched}/{len(rows)} rows from {path.name}")
 
 
-def rows_with_divergences(run_dir: Path, reference: torch.Tensor) -> list[dict]:
+def rows_with_divergences(run_dir: Path, reference: torch.Tensor, per_sample: bool=False) -> list[dict]:
     metrics_path = run_dir / "metrics.csv"
     histogram_dir = run_dir / "histograms"
     if not metrics_path.exists():
@@ -188,6 +196,7 @@ def rows_with_divergences(run_dir: Path, reference: torch.Tensor) -> list[dict]:
             if candidate_path.exists():
                 histogram_path = candidate_path
                 histogram_key = candidate
+                print(f"Evaluating: {candidate_path}")
                 break
         if histogram_path is None:
             raise FileNotFoundError(
@@ -197,7 +206,31 @@ def rows_with_divergences(run_dir: Path, reference: torch.Tensor) -> list[dict]:
         enriched = dict(row)
         enriched["source_run"] = run_dir.name
         enriched["histogram_key"] = histogram_key
-        enriched.update(compute_all(reference, comparison))
+        if per_sample:
+            enriched["per_sample"] = True
+            final_result_keys = None
+            scored = []
+            for sample_idx in range(comparison.shape[0]):
+                sample = densify(comparison[sample_idx])
+                if float(sample.sum()) <= 0:
+                    # Empty generation: no rank histogram to score. Counted in empty_samples.
+                    continue
+                all_metrics = compute_all(reference, sample)
+                if final_result_keys == None:
+                    final_result_keys = all_metrics.keys()
+                scored.append(list(all_metrics.values()))
+
+            if not scored:
+                raise ValueError(f"Every sample is empty in {histogram_path}")
+            final_result_values = torch.tensor(scored, dtype=torch.float64)
+            enriched["per_sample_scored"] = len(scored)
+            means = final_result_values.mean(axis=0).tolist()
+            std = final_result_values.std(axis=0).tolist()
+            final_result_keys_std = [name + "_std" for name in final_result_keys]
+            enriched.update(dict(zip(final_result_keys, means)))
+            enriched.update(dict(zip(final_result_keys_std, std)))
+        else:
+            enriched.update(compute_all(reference, densify(comparison)))
         rows.append(enriched)
     return rows
 
@@ -461,9 +494,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise FileNotFoundError(f"Missing reference histogram: {reference_path}")
     reference = load_histogram(reference_path)
 
-    rows = rows_with_divergences(args.run_dir, reference)
+    rows = rows_with_divergences(args.run_dir, reference, per_sample=args.per_sample)
     for baseline_run in args.baseline_run:
-        rows.extend(rows_with_divergences(baseline_run, reference))
+        rows.extend(rows_with_divergences(baseline_run, reference, per_sample=args.per_sample))
     merge_distributional_metrics(rows, args.run_dir)
     merge_de_fmtyp(rows, args.run_dir)
 
