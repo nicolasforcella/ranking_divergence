@@ -56,14 +56,28 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reference-split", default=OWT_HELDOUT_SPLIT)
     parser.add_argument("--num-reference", type=int, default=128)
     parser.add_argument("--max-length", type=int, default=1024)
+    parser.add_argument("--start-token", type=int, default=0, help="Starting token used for evaulation. Previous tokens will be used for conditioning but will not form part of the histogram.")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--rank-position-chunk", type=int, default=64)
+    parser.add_argument("--scoring-method", choices=["count", "inv_prob", "entropy_bins"], default="count", 
+                            help="How the rank histogram is built. " \
+                            "inv_prob: weights based on inverse probability assigned by scorer; " \
+                            "entropy_bins: builds the histogram based on the entropy bin assigned by the scorer model.",
+    )
+    parser.add_argument("--n-entropy-bins", type=int, default=16, help="Number of entropy bins; only used by --scoring-method entropy_bins.")
+    parser.add_argument( "--per-sample", action="store_true", help="Build one rank histogram per generated sample. Requires --scoring-method count.")
+    parser.add_argument("--ref-hist-cache-dir", type=Path, default=Path("cache/ref_hist"), help="Root folder containing reference histogram cache.")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--limit-configs", type=int, default=None)
     parser.add_argument("--limit-samples", type=int, default=None)
     parser.add_argument("--inventory-only", action="store_true")
     parser.add_argument("--force", action="store_true", help="Recompute existing checkpoints.")
-    return parser.parse_args(argv)
+    parser.add_argument("--force-ref-hist", action="store_true", help="Recompute reference histogram.")
+    args = parser.parse_args(argv)
+    if args.per_sample and args.scoring_method != "count":
+        parser.error( f"--per-sample only supports --scoring-method count.")
+
+    return args
 
 
 def parse_sweeps(values: Sequence[str] | None) -> dict[str, Path]:
@@ -154,6 +168,12 @@ def tokenize_texts(texts: Sequence[str], tokenizer) -> list[list[int]]:
     return [tokenizer.encode(text, add_special_tokens=False) for text in texts]
 
 
+def save_histogram(path: Path, histogram: torch.Tensor, *, sparse: bool) -> None:
+    """Store a rank histogram, CSR-compressed for the per-sample case. Avoid storing excesive amounts of zeros."""
+
+    torch.save(histogram.to_sparse_csr() if sparse else histogram, path)
+
+
 def write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -203,15 +223,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     evaluation_config = {
         "scorer_model": args.scorer_model,
         "device": args.device,
+        "start_token": args.start_token,
         "max_length": args.max_length,
         "batch_size": args.batch_size,
         "rank_position_chunk": args.rank_position_chunk,
+        "scoring_method": args.scoring_method,
         "num_reference": args.num_reference,
         "reference_split": args.reference_split,
         "cache_dir": args.cache_dir,
         "limit_samples": args.limit_samples,
+        "per_sample": args.per_sample,
         "sweeps": {method: str(path) for method, path in sweeps.items()},
     }
+    if args.scoring_method == "entropy_bins":
+        evaluation_config["n_entropy_bins"] = args.n_entropy_bins
     if metadata_path.exists() and not args.force:
         existing_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         existing_config = {key: existing_metadata.get(key) for key in evaluation_config}
@@ -225,16 +250,34 @@ def main(argv: Sequence[str] | None = None) -> None:
         metadata = {"created_utc": datetime.now(timezone.utc).isoformat(), **evaluation_config}
         write_json(metadata_path, metadata)
 
+    #Load scorer and tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.scorer_model)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(args.scorer_model).to(args.device).eval()
 
+    #Load or build reference histogram. The cache is keyed by scoring method and params when necessary.
+    if args.scoring_method == "entropy_bins":
+        scoring_method_tag = f"entropy_bins{args.n_entropy_bins}"
+    elif args.scoring_method == "inv_prob":
+        scoring_method_tag = "weighted"
+    else:
+        scoring_method_tag = "unweighted"
     reference_path = run_dir / "reference_rank_histogram.pt"
+    scorer_model_tag = args.scorer_model.replace("/", "_").replace("-", "_")
+    cached_reference_path = (
+        args.ref_hist_cache_dir / scorer_model_tag / f"reference_rank_histogram_{scoring_method_tag}.pt"
+    )
     if reference_path.exists() and not args.force:
         reference_histogram = torch.load(
             reference_path, map_location="cpu", weights_only=True
         )
+    elif cached_reference_path.exists() and not args.force_ref_hist:
+        print(f"Loading cached reference histogram from {cached_reference_path}")
+        reference_histogram = torch.load(
+            cached_reference_path, map_location="cpu", weights_only=True
+        )
+        torch.save(reference_histogram, reference_path)
     else:
         print(f"Loading {args.num_reference} held-out OpenWebText reference documents...")
         reference_texts = load_openwebtext_texts(
@@ -252,8 +295,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             rank_position_chunk=args.rank_position_chunk,
             device=args.device,
             description="reference",
+            method=args.scoring_method,
+            n_entropy_bins=args.n_entropy_bins,
+            per_sample=False,
         )
         torch.save(reference_histogram, reference_path)
+        cached_reference_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(reference_histogram, cached_reference_path)
 
     for index, item in enumerate(files, start=1):
         checkpoint_path = checkpoint_dir / f"{item.key}.json"
@@ -270,13 +318,19 @@ def main(argv: Sequence[str] | None = None) -> None:
             tokenizer,
             batch_size=args.batch_size,
             max_length=args.max_length,
+            start_token=args.start_token,
             rank_position_chunk=args.rank_position_chunk,
             device=args.device,
             description=item.key,
+            method=args.scoring_method,
+            n_entropy_bins=args.n_entropy_bins,
+            per_sample=args.per_sample,
         )
         # Persist the per-config comparison histogram so alternative divergences can be
         # explored offline (see examples/explore_divergences.py) without re-running gpt2.
-        torch.save(comparison_histogram, histogram_dir / f"{item.key}.pt")
+        save_histogram(
+            histogram_dir / f"{item.key}.pt", comparison_histogram, sparse=args.per_sample
+        )
         temperature = float(source.get("temperature", item.temperature_label))
         row = {
             "method": item.method,
@@ -288,10 +342,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             "source_gen_ppl": source.get("generative_ppl"),
             "source_entropy": source.get("entropy"),
             "gen_ppl": gen_ppl,
-            "rank_wasserstein": rank_wasserstein_from_histograms(
-                reference_histogram, comparison_histogram, normalize=False
-            ),
         }
+        if not args.per_sample:
+            row["rank_wasserstein"] = rank_wasserstein_from_histograms(
+                reference_histogram, comparison_histogram, normalize=False
+            )
         row.update(lexical_metrics(texts, token_ids))
         write_json(checkpoint_path, row)
 

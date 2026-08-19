@@ -5,10 +5,15 @@ description = "LLM rank-histogram divergences and lightweight text generation me
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "huggingface-hub>=1.23.0",
+    "nltk>=3.10.0",
     "numpy>=1.23",
-    "torch==2.5.1",
+    "torch>=2.5",
+    "torchaudio>=2.11",
+    "torchvision>=0.26",
     "tqdm>=4.64",
-    "transformers>=4.24,<5",
+    "transformers>=5.5.3",
+    "vllm>=0.24",
 ]
 
 [project.optional-dependencies]
@@ -31,9 +36,14 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu121" }]
+# CUDA 12.9 builds: newest runtime still compatible with the driver (535 / CUDA 12.2);
+# default PyPI torch/vllm are CUDA 13 builds, which the driver rejects
+torch = [{ index = "pytorch-cu129" }]
+torchvision = [{ index = "pytorch-cu129" }]
+torchaudio = [{ index = "pytorch-cu129" }]
+vllm = { url = "https://github.com/vllm-project/vllm/releases/download/v0.25.1/vllm-0.25.1+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }
 
 [[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
 explicit = true

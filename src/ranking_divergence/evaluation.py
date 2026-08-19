@@ -17,15 +17,33 @@ def score_token_ids(
     tokenizer,
     *,
     batch_size: int,
+    start_token: int = 0,
     max_length: int,
     rank_position_chunk: int,
     device: str,
     description: str,
+    method: str = "count", #Options count, inv_prob, entropy_bins
+    n_entropy_bins: int = 16,
+    per_sample: bool = False,
 ) -> tuple[float, torch.Tensor]:
     """Compute DUO-style gen-PPL and a normalized rank histogram in one model pass."""
 
+    if method not in {"count", "inv_prob", "entropy_bins"}:
+        raise ValueError(f"Unknown method: {method!r}")
+
+    #!TODO: Implement for other methods if needed
+    if per_sample:
+        assert method == 'count', "Per sample is only implemented for count"
+
+    
     vocab_size = int(model.config.vocab_size)
-    histogram = torch.zeros(vocab_size, dtype=torch.float64)
+    n_bins = n_entropy_bins if method == "entropy_bins" else 1
+
+    if per_sample:
+        histogram = torch.zeros(len(token_ids), n_bins * vocab_size, dtype=torch.float64)
+    else:
+        histogram = torch.zeros(n_bins * vocab_size, dtype=torch.float64)
+    entropy_edges = torch.linspace(0.0, math.log(vocab_size), n_bins + 1)[1:-1]
     total_loss = 0.0
     total_ppl_tokens = 0
     model_context = int(getattr(model.config, "n_positions", max_length))
@@ -52,21 +70,42 @@ def score_token_ids(
         non_eos = input_ids != tokenizer.eos_token_id
         ppl_valid = (first_eos[:, 1:] | non_eos[:, 1:]) & attention_mask[:, 1:].bool()
 
-        for position in range(0, labels.shape[1], rank_position_chunk):
+        effective_start_token = start_token - 1 if start_token != 0 else 0 #Score exact amount of tokens except in the BOS token.
+        for position in range(effective_start_token, labels.shape[1], rank_position_chunk):
             stop = position + rank_position_chunk
             chunk_logits = logits[:, position:stop, :]
             chunk_labels = labels[:, position:stop]
-
-            observed = chunk_logits.gather(-1, chunk_labels.unsqueeze(-1))
-            ranks = (chunk_logits > observed).sum(dim=-1) + 1
-            valid_ranks = ranks[rank_valid[:, position:stop]].detach().cpu()
-            histogram += torch.bincount(valid_ranks - 1, minlength=vocab_size).to(torch.float64)
 
             losses = F.cross_entropy(
                 chunk_logits.reshape(-1, vocab_size),
                 chunk_labels.reshape(-1),
                 reduction="none",
             ).reshape_as(chunk_labels)
+            observed = chunk_logits.gather(-1, chunk_labels.unsqueeze(-1))
+            ranks = (chunk_logits > observed).sum(dim=-1) + 1
+            chunk_valid = rank_valid[:, position:stop]
+            valid_ranks = ranks[chunk_valid].detach().cpu()
+            weights = losses[chunk_valid].detach().double().exp().cpu() if method == "inv_prob" else None
+
+            if not per_sample:
+                if method == "entropy_bins":
+                    log_probs = F.log_softmax(chunk_logits, dim=-1)
+                    entropy = -(log_probs.exp() * log_probs).sum(-1)  # (B, T), nats
+                    entropy_bin = torch.bucketize(entropy[chunk_valid].detach().float().cpu(), entropy_edges)
+                    flat_index = (valid_ranks - 1) * n_bins + entropy_bin
+                    del log_probs, entropy
+                else:
+                    flat_index = valid_ranks - 1
+
+                histogram += torch.bincount(flat_index, weights=weights, minlength=histogram.numel()).to(torch.float64)
+            else:
+                #Compute per sample histogram
+                rows = chunk_labels.shape[0]
+                row_index = torch.arange(rows, device=ranks.device).unsqueeze(1).expand_as(ranks)
+                flat_index = (row_index * vocab_size + (ranks - 1))[chunk_valid].detach().cpu()
+                counts = torch.bincount(flat_index, minlength=rows * vocab_size)
+                histogram[start : start + rows] += counts.reshape(rows, vocab_size).to(torch.float64)
+
             valid_ppl = ppl_valid[:, position:stop]
             total_loss += float(losses[valid_ppl].sum().item())
             total_ppl_tokens += int(valid_ppl.sum().item())
@@ -78,6 +117,10 @@ def score_token_ids(
     if total_ppl_tokens == 0:
         raise ValueError("No valid next-token positions found for perplexity.")
     gen_ppl = math.exp(total_loss / total_ppl_tokens)
+    if per_sample:
+        # Normalize each sample's row independently, rows with no valid positions stay zero.
+        totals = histogram.sum(dim=-1, keepdim=True)
+        return gen_ppl, histogram / totals.clamp(min=1.0)
     return gen_ppl, histogram / histogram.sum()
 
 

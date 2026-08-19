@@ -8,6 +8,9 @@ wheels/
 *.egg-info/
 .pytest_cache/
 
+tmp/*
+cache/*
+
 # outputs
 outputs/
 
