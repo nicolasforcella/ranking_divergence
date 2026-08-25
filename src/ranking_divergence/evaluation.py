@@ -3,11 +3,37 @@ from __future__ import annotations
 import math
 from typing import Sequence
 
+from transformers import RepetitionPenaltyLogitsProcessor
+
 import torch
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 from .metrics import per_sample_unigram_entropy, rep_n, unique_ngram_ratios
+
+
+def compute_causal_repetition_penalty(logits: torch.Tensor, input_ids: torch.Tensor, penalty: float = 1.2):
+    """Compute repetition penalty for all tokens, not just the predicted one."""
+
+    penalty_processor = RepetitionPenaltyLogitsProcessor(penalty)
+
+    for token_pos in range(logits.shape[1]):
+
+        logits[:, token_pos, :] = penalty_processor(
+            input_ids=input_ids[:, :token_pos+1],
+            scores=logits[:, token_pos, :],
+        )
+
+    return logits
+
+
+def compute_model_entropy(logits: torch.Tensor):
+    """Compute per token entropy based on logits"""
+    log_probs = F.log_softmax(logits, dim=-1)
+    entropy = -(log_probs.exp() * log_probs).sum(-1)  # (B, T), nats
+    del log_probs
+
+    return entropy
 
 
 @torch.inference_mode()
@@ -25,7 +51,8 @@ def score_token_ids(
     method: str = "count", #Options count, inv_prob, entropy_bins
     n_entropy_bins: int = 16,
     per_sample: bool = False,
-) -> tuple[float, torch.Tensor]:
+    rep_penalty: float | None = None,
+) -> tuple[float, torch.Tensor, float]:
     """Compute DUO-style gen-PPL and a normalized rank histogram in one model pass."""
 
     if method not in {"count", "inv_prob", "entropy_bins"}:
@@ -46,6 +73,7 @@ def score_token_ids(
     entropy_edges = torch.linspace(0.0, math.log(vocab_size), n_bins + 1)[1:-1]
     total_loss = 0.0
     total_ppl_tokens = 0
+    total_model_entropy = 0
     model_context = int(getattr(model.config, "n_positions", max_length))
     effective_length = min(max_length, model_context)
 
@@ -63,7 +91,11 @@ def score_token_ids(
         if input_ids.shape[1] < 2:
             continue
 
-        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits[:, :-1, :]
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+        if rep_penalty is not None and rep_penalty != 1.0:
+            logits = compute_causal_repetition_penalty(logits, input_ids, rep_penalty)
+        logits = logits[:, :-1, :]
+
         labels = input_ids[:, 1:]
         rank_valid = attention_mask[:, :-1].bool() & attention_mask[:, 1:].bool()
         first_eos = (input_ids == tokenizer.eos_token_id).cumsum(dim=-1) == 1
@@ -86,14 +118,11 @@ def score_token_ids(
             chunk_valid = rank_valid[:, position:stop]
             valid_ranks = ranks[chunk_valid].detach().cpu()
             weights = losses[chunk_valid].detach().double().exp().cpu() if method == "inv_prob" else None
-
+            entropy = compute_model_entropy(chunk_logits)
             if not per_sample:
                 if method == "entropy_bins":
-                    log_probs = F.log_softmax(chunk_logits, dim=-1)
-                    entropy = -(log_probs.exp() * log_probs).sum(-1)  # (B, T), nats
                     entropy_bin = torch.bucketize(entropy[chunk_valid].detach().float().cpu(), entropy_edges)
                     flat_index = (valid_ranks - 1) * n_bins + entropy_bin
-                    del log_probs, entropy
                 else:
                     flat_index = valid_ranks - 1
 
@@ -107,6 +136,7 @@ def score_token_ids(
                 histogram[start : start + rows] += counts.reshape(rows, vocab_size).to(torch.float64)
 
             valid_ppl = ppl_valid[:, position:stop]
+            total_model_entropy += float(entropy[valid_ppl].sum().item())
             total_loss += float(losses[valid_ppl].sum().item())
             total_ppl_tokens += int(valid_ppl.sum().item())
 
@@ -117,11 +147,13 @@ def score_token_ids(
     if total_ppl_tokens == 0:
         raise ValueError("No valid next-token positions found for perplexity.")
     gen_ppl = math.exp(total_loss / total_ppl_tokens)
+    model_entropy = total_model_entropy / total_ppl_tokens
     if per_sample:
-        # Normalize each sample's row independently, rows with no valid positions stay zero.
+        #Normalize each sample's row independently.
         totals = histogram.sum(dim=-1, keepdim=True)
-        return gen_ppl, histogram / totals.clamp(min=1.0)
-    return gen_ppl, histogram / histogram.sum()
+        return gen_ppl, histogram / totals.clamp(min=1.0), model_entropy
+
+    return gen_ppl, histogram / histogram.sum(), model_entropy
 
 
 def lexical_metrics(texts: Sequence[str], token_ids: Sequence[Sequence[int]]) -> dict[str, float]:

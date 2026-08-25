@@ -34,6 +34,7 @@ TARGET_COLUMNS = {
     "gen_ppl",
     "source_gen_ppl",
     "source_entropy",
+    "model_entropy",
     "unigram_entropy",
     "mean_tokens",
     "mauve",

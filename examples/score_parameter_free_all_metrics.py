@@ -62,7 +62,7 @@ def main() -> None:
     for path in sorted(args.token_dir.glob("*.json")):
         name = path.stem
         token_ids = json.loads(path.read_text())
-        gen_ppl, hist = score_token_ids(token_ids, model, tokenizer, batch_size=1, max_length=1024,
+        gen_ppl, hist, model_entropy = score_token_ids(token_ids, model, tokenizer, batch_size=1, max_length=1024,
                                         rank_position_chunk=64, device=args.device, description=name)
         texts = tokenizer.batch_decode(token_ids, skip_special_tokens=False)
         gen_feats = edm.featurize(texts, model, tokenizer, args.device, 1024, 32)
@@ -72,6 +72,7 @@ def main() -> None:
             "method": DISPLAY.get(name, name), "nfe": 0, "temperature_label": "",
             "unigram_entropy": per_sample_unigram_entropy(texts, token_ids=token_ids),
             "gen_ppl": gen_ppl,
+            "model_entropy": model_entropy,
             "rank_wasserstein": rank_wasserstein_from_histograms(reference, hist, normalize=False),
             "mauve": float(mauve_out.mauve),
             "gm": float(((gen_grad - ref_grad) ** 2).sum().item()),

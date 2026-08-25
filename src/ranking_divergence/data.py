@@ -4,12 +4,10 @@ import os
 from itertools import islice
 from typing import Iterable
 
+OWT_DATASET_ID = "Skylion007/openwebtext"
 OWT_SAMPLER_SOURCE_SPLIT = "train[:-100000]"
 OWT_HELDOUT_SPLIT = "train[-100000:]"
-DUO_SCRATCH_DIR = os.environ.get(
-    "RANKING_DIVERGENCE_CACHE",
-    "/users/staff/dmi-dmi/miele0000/.cache/discrete_diffusion",
-)
+DUO_SCRATCH_DIR = os.environ.get("RANKING_DIVERGENCE_CACHE", "/users/staff/dmi-dmi/miele0000/.cache/discrete_diffusion")
 DUO_OWT_CACHE_DIR = f"{DUO_SCRATCH_DIR}/owt"
 
 
@@ -39,10 +37,10 @@ def load_openwebtext_texts(
         raise ImportError("Install examples dependencies with `uv pip install -e '.[examples]'`.") from exc
 
     dataset = datasets.load_dataset(
-        "openwebtext",
+        OWT_DATASET_ID,
         split=split,
         cache_dir=cache_dir,
-        streaming=streaming,
+        streaming=False,
         trust_remote_code=True,
     )
     rows: Iterable[dict] = dataset

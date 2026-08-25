@@ -151,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         texts = tokenizer.batch_decode(token_ids, skip_special_tokens=False)
         write_json(token_dir / f"{name}.json", token_ids)
-        gen_ppl, histogram = score_token_ids(
+        gen_ppl, histogram, model_entropy = score_token_ids(
             token_ids,
             scorer,
             tokenizer,
@@ -171,6 +171,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "temperature_label": "",
             "num_samples": args.num_samples,
             "gen_ppl": gen_ppl,
+            "model_entropy": model_entropy,
             "rank_wasserstein": rank_wasserstein_from_histograms(
                 reference_histogram, histogram, normalize=False
             ),

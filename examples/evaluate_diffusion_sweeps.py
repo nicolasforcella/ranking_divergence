@@ -66,6 +66,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--n-entropy-bins", type=int, default=16, help="Number of entropy bins; only used by --scoring-method entropy_bins.")
     parser.add_argument( "--per-sample", action="store_true", help="Build one rank histogram per generated sample. Requires --scoring-method count.")
+    parser.add_argument( "--rep-penalty", type=float, help="Repetition penalty used for building the ranking.")
     parser.add_argument("--ref-hist-cache-dir", type=Path, default=Path("cache/ref_hist"), help="Root folder containing reference histogram cache.")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--limit-configs", type=int, default=None)
@@ -233,6 +234,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "cache_dir": args.cache_dir,
         "limit_samples": args.limit_samples,
         "per_sample": args.per_sample,
+        "rep_penalty": args.rep_penalty,
         "sweeps": {method: str(path) for method, path in sweeps.items()},
     }
     if args.scoring_method == "entropy_bins":
@@ -263,6 +265,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         scoring_method_tag = "weighted"
     else:
         scoring_method_tag = "unweighted"
+    """ if args.rep_penalty is not None and args.rep_penalty != 1.0:
+        scoring_method_tag += f"_penalty{args.rep_penalty:g}" """
     reference_path = run_dir / "reference_rank_histogram.pt"
     scorer_model_tag = args.scorer_model.replace("/", "_").replace("-", "_")
     cached_reference_path = (
@@ -286,7 +290,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             limit=args.num_reference,
         )
         reference_ids = tokenize_texts(reference_texts, tokenizer)
-        _, reference_histogram = score_token_ids(
+        _, reference_histogram, _ = score_token_ids(
             reference_ids,
             model,
             tokenizer,
@@ -298,6 +302,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             method=args.scoring_method,
             n_entropy_bins=args.n_entropy_bins,
             per_sample=False,
+            #rep_penalty=args.rep_penalty,
         )
         torch.save(reference_histogram, reference_path)
         cached_reference_path.parent.mkdir(parents=True, exist_ok=True)
@@ -312,7 +317,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"[{index}/{len(files)}] evaluating {item.key}")
         texts, source = load_generation_file(item, args.limit_samples)
         token_ids = tokenize_texts(texts, tokenizer)
-        gen_ppl, comparison_histogram = score_token_ids(
+        gen_ppl, comparison_histogram, model_entropy = score_token_ids(
             token_ids,
             model,
             tokenizer,
@@ -325,6 +330,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             method=args.scoring_method,
             n_entropy_bins=args.n_entropy_bins,
             per_sample=args.per_sample,
+            rep_penalty=args.rep_penalty,
         )
         # Persist the per-config comparison histogram so alternative divergences can be
         # explored offline (see examples/explore_divergences.py) without re-running gpt2.
@@ -342,6 +348,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "source_gen_ppl": source.get("generative_ppl"),
             "source_entropy": source.get("entropy"),
             "gen_ppl": gen_ppl,
+            "model_entropy": model_entropy,
         }
         if not args.per_sample:
             row["rank_wasserstein"] = rank_wasserstein_from_histograms(

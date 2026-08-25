@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -89,7 +90,7 @@ def test_combined_scorer_returns_finite_ppl_and_normalized_histogram():
             logits[..., 0] = 1.0
             return SimpleNamespace(logits=logits)
 
-    ppl, histogram = evaluate_diffusion_sweeps.score_token_ids(
+    ppl, histogram, model_entropy = evaluate_diffusion_sweeps.score_token_ids(
         [[4, 0, 1, 2], [4, 0, 0]],
         TinyModel(),
         TinyTokenizer(),
@@ -103,3 +104,4 @@ def test_combined_scorer_returns_finite_ppl_and_normalized_histogram():
     assert torch.isfinite(torch.tensor(ppl))
     assert histogram.shape == (5,)
     assert torch.isclose(histogram.sum(), torch.tensor(1.0, dtype=torch.float64))
+    assert 0.0 <= model_entropy <= math.log(TinyModel.config.vocab_size)
