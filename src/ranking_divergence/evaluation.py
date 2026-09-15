@@ -28,12 +28,11 @@ def compute_causal_repetition_penalty(logits: torch.Tensor, input_ids: torch.Ten
 
 
 def compute_model_entropy(logits: torch.Tensor):
-    """Compute per token entropy based on logits"""
-    log_probs = F.log_softmax(logits, dim=-1)
-    entropy = -(log_probs.exp() * log_probs).sum(-1)  # (B, T), nats
-    del log_probs
+    """Compute per token entropy based on logits."""
+    log_probs = F.log_softmax(logits.float(), dim=-1)
+    entropy = -(log_probs.exp() * log_probs).sum(-1)  #(B, T), nats
 
-    return entropy
+    return log_probs, entropy
 
 
 @torch.inference_mode()
@@ -44,6 +43,7 @@ def score_token_ids(
     *,
     batch_size: int,
     start_token: int = 0,
+    start_token_positions: torch.Tensor | Sequence[int] | None = None,
     max_length: int,
     rank_position_chunk: int,
     device: str,
@@ -58,6 +58,11 @@ def score_token_ids(
     if method not in {"count", "inv_prob", "entropy_bins"}:
         raise ValueError(f"Unknown method: {method!r}")
 
+    if start_token_positions is not None:
+        if start_token != 0:
+            raise ValueError("start_token and start_token_positions can not be used togeather.")
+        start_token_positions = torch.as_tensor(start_token_positions, dtype=torch.int64)
+
     #!TODO: Implement for other methods if needed
     if per_sample:
         assert method == 'count', "Per sample is only implemented for count"
@@ -71,6 +76,7 @@ def score_token_ids(
     else:
         histogram = torch.zeros(n_bins * vocab_size, dtype=torch.float64)
     entropy_edges = torch.linspace(0.0, math.log(vocab_size), n_bins + 1)[1:-1]
+
     total_loss = 0.0
     total_ppl_tokens = 0
     total_model_entropy = 0
@@ -102,6 +108,13 @@ def score_token_ids(
         non_eos = input_ids != tokenizer.eos_token_id
         ppl_valid = (first_eos[:, 1:] | non_eos[:, 1:]) & attention_mask[:, 1:].bool()
 
+        if start_token_positions is not None:
+            #Mask the positions corresponding to the startof the generation.
+            start_token_batch = start_token_positions[start : start + batch_size].to(device)
+            scored_mask= torch.arange(labels.shape[1], device=device) >= (start_token_batch - 1).clamp(min=0).unsqueeze(1) 
+            rank_valid = rank_valid & scored_mask
+            ppl_valid = ppl_valid & scored_mask
+
         effective_start_token = start_token - 1 if start_token != 0 else 0 #Score exact amount of tokens except in the BOS token.
         for position in range(effective_start_token, labels.shape[1], rank_position_chunk):
             stop = position + rank_position_chunk
@@ -118,7 +131,7 @@ def score_token_ids(
             chunk_valid = rank_valid[:, position:stop]
             valid_ranks = ranks[chunk_valid].detach().cpu()
             weights = losses[chunk_valid].detach().double().exp().cpu() if method == "inv_prob" else None
-            entropy = compute_model_entropy(chunk_logits)
+            _, entropy = compute_model_entropy(chunk_logits)
             if not per_sample:
                 if method == "entropy_bins":
                     entropy_bin = torch.bucketize(entropy[chunk_valid].detach().float().cpu(), entropy_edges)
@@ -149,12 +162,103 @@ def score_token_ids(
     gen_ppl = math.exp(total_loss / total_ppl_tokens)
     model_entropy = total_model_entropy / total_ppl_tokens
     if per_sample:
-        #Normalize each sample's row independently.
+        #Normalize each sample row independently.
         totals = histogram.sum(dim=-1, keepdim=True)
         return gen_ppl, histogram / totals.clamp(min=1.0), model_entropy
 
     return gen_ppl, histogram / histogram.sum(), model_entropy
 
+
+@torch.inference_mode()
+def score_tokens_no_rank(
+    token_ids: Sequence[Sequence[int]],
+    model,
+    tokenizer,
+    *,
+    batch_size: int,
+    max_length: int,
+    rank_position_chunk: int,
+    device: str,
+    per_sample: bool = False,
+    temperature: float = 1.0,
+) -> torch.Tensor:
+    """Compute DUO-style gen-PPL and model entropy.
+    If per sample --> Returns a tensor containing the per sample loss and entropy as well as the number of tokens.
+    Else --> Returns a tensor containing aggregated genPPL and entropy and KL(q_gen, p_ref).
+    KL assumes H(p_ref) is a good estimator of H(g_gen).
+    """
+
+
+    results_tensor = torch.zeros((len(token_ids), 3), dtype=torch.float64)
+    #For each sample store cumulative loss, cumulative entropy and number of scored tokens
+
+    model_context = int(getattr(model.config, "n_positions", max_length))
+    effective_length = min(max_length, model_context)
+
+    iterator = tqdm(total=len(token_ids), desc="Scoring tokens", leave=False, unit="sample")
+    for start in range(0, len(token_ids), batch_size):
+        batch_ids = [list(ids[:effective_length]) for ids in token_ids[start : start + batch_size]]
+        encoded = tokenizer.pad(
+            {"input_ids": batch_ids},
+            padding=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        input_ids = encoded["input_ids"].to(device)
+        attention_mask = encoded["attention_mask"].to(device)
+        if input_ids.shape[1] < 2:
+            iterator.update(len(batch_ids))
+            continue
+
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits[:, :-1, :]
+        labels = input_ids[:, 1:]
+        first_eos = (input_ids == tokenizer.eos_token_id).cumsum(dim=-1) == 1
+        non_eos = input_ids != tokenizer.eos_token_id
+        ppl_valid = (first_eos[:, 1:] | non_eos[:, 1:]) & attention_mask[:, 1:].bool()
+
+        for position in range(0, labels.shape[1], rank_position_chunk):
+            stop = position + rank_position_chunk
+            chunk_logits = logits[:, position:stop, :]
+            chunk_labels = labels[:, position:stop]
+            if temperature != 1.0:
+                chunk_logits = chunk_logits / temperature
+
+            log_probs, entropy = compute_model_entropy(chunk_logits)
+
+            loss = -log_probs.gather(-1, chunk_labels.unsqueeze(-1))
+
+
+            valid_ppl = ppl_valid[:, position:stop]
+            valid_mask = valid_ppl.to(loss.dtype)
+            loss_valid = loss.squeeze(-1) * valid_mask
+            entropy_valid = entropy * valid_mask
+
+            rows = chunk_logits.shape[0]
+            results_tensor[start : start + rows, 0] += loss_valid.sum(dim=1).double().cpu()
+            results_tensor[start : start + rows, 1] += entropy_valid.sum(dim=1).double().cpu()
+            results_tensor[start : start + rows, 2] += valid_ppl.sum(dim=1).double().cpu()
+
+            del log_probs, entropy, loss, chunk_logits
+
+        del logits
+        iterator.update(len(batch_ids))
+
+    iterator.close()
+
+    if not per_sample:
+
+        totals = results_tensor.sum(dim=0)
+        total_tokens = totals[2].item()
+        if total_tokens == 0:
+            raise ValueError("No valid next-token positions found for perplexity.")
+        gen_ppl = math.exp(totals[0].item() / total_tokens)
+        model_entropy = totals[1].item() / total_tokens
+        return torch.tensor(
+            [gen_ppl, model_entropy, total_tokens, math.log(gen_ppl) - model_entropy],
+            dtype=torch.float64,
+        )
+    else:
+        return results_tensor
 
 def lexical_metrics(texts: Sequence[str], token_ids: Sequence[Sequence[int]]) -> dict[str, float]:
     row = {

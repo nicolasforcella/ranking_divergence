@@ -1,29 +1,19 @@
+"""Copy from evaluate diffusion sweeps for the genPPL and Entropy computation."""
 from __future__ import annotations
-
 import argparse
 import csv
 import json
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, Sequence
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from ranking_divergence import (
-    lexical_metrics,
-    rank_wasserstein_from_histograms,
-    score_token_ids,
-)
-from ranking_divergence.data import DUO_OWT_CACHE_DIR, OWT_HELDOUT_SPLIT, load_openwebtext_texts
+from ranking_divergence import lexical_metrics
+from ranking_divergence.evaluation import score_tokens_no_rank
 
 
-DEFAULT_SWEEPS = {
-    "mdlm": Path("/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/mdlm-50k"),
-    "candi": Path("/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/candi-orig-50k"),
-    "duo": Path("/data/remote_cache/patrick/discrete_diffusion/gen-sample-candi-proj/duo-50k"),
-}
 SAMPLE_RE = re.compile(r"^samples_steps(?P<nfe>\d+)_temp(?P<temperature>[0-9.]+)\.json$")
 
 
@@ -40,59 +30,45 @@ class SweepFile(NamedTuple):
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate MDLM/CANDI/DUO temperature-by-NFE generation sweeps."
+        description="Evaluate gen-PPL and model entropy over generation sweeps."
     )
     parser.add_argument(
         "--sweep",
         action="append",
         default=None,
         metavar="METHOD=DIR",
-        help="Sweep directory. Repeatable; defaults to the three project sweeps.",
+        help="Sweep directory. Repeatable. A bare DIR uses the directory name as METHOD.",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/diffusion_sweep_analysis"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs/gen_frontiers"))
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--scorer-model", default="gpt2-large")
-    parser.add_argument("--dtype",default="auto", help="Scorer's dtype.")
-    parser.add_argument("--cache-dir", default=DUO_OWT_CACHE_DIR)
-    parser.add_argument("--reference-split", default=OWT_HELDOUT_SPLIT)
-    parser.add_argument("--num-reference", type=int, default=128)
+    parser.add_argument("--scorer-temperature", default="1.0", help="Scorer temperature.")
     parser.add_argument("--max-length", type=int, default=1024)
-    parser.add_argument("--start-token", type=int, default=0, help="Starting token used for evaulation. Previous tokens will be used for conditioning but will not form part of the histogram.")
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--rank-position-chunk", type=int, default=64)
-    parser.add_argument("--scoring-method", choices=["count", "inv_prob", "entropy_bins"], default="count", 
-                            help="How the rank histogram is built. " \
-                            "inv_prob: weights based on inverse probability assigned by scorer; " \
-                            "entropy_bins: builds the histogram based on the entropy bin assigned by the scorer model.",
-    )
-    parser.add_argument("--n-entropy-bins", type=int, default=16, help="Number of entropy bins; only used by --scoring-method entropy_bins.")
-    parser.add_argument( "--per-sample", action="store_true", help="Build one rank histogram per generated sample. Requires --scoring-method count.")
-    parser.add_argument( "--rep-penalty", type=float, help="Repetition penalty used for building the ranking.")
-    parser.add_argument("--ref-hist-cache-dir", type=Path, default=Path("cache/ref_hist"), help="Root folder containing reference histogram cache.")
-    parser.add_argument("--reference-source", choices=["owt", "qwen_texts", "owt_modified"], default="owt")
-    parser.add_argument("--reference-texts-file", type=Path, default="cache/owt_nucleus_sampling/reference_texts.json", help="File holding the reference documents.")
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--rank-position-chunk", type=int, default=128)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--dtype", default="auto", choices=["float16", "bfloat16", "float32", "auto"], help="Scorer model's load dtype.")
     parser.add_argument("--limit-configs", type=int, default=None)
     parser.add_argument("--limit-samples", type=int, default=None)
+    parser.add_argument("--per-sample", action="store_true", help="Store the per-sample metric tensor for each config.")
     parser.add_argument("--inventory-only", action="store_true")
     parser.add_argument("--force", action="store_true", help="Recompute existing checkpoints.")
-    parser.add_argument("--force-ref-hist", action="store_true", help="Recompute reference histogram.")
     args = parser.parse_args(argv)
-    if args.per_sample and args.scoring_method != "count":
-        parser.error( f"--per-sample only supports --scoring-method count.")
 
     return args
 
 
 def parse_sweeps(values: Sequence[str] | None) -> dict[str, Path]:
     if not values:
-        return dict(DEFAULT_SWEEPS)
+        raise ValueError("Provide at least one --sweep METHOD=DIR or --sweep DIR.")
     sweeps: dict[str, Path] = {}
     for value in values:
-        if "=" not in value:
-            raise ValueError(f"Invalid --sweep {value!r}; expected METHOD=DIR.")
-        method, directory = value.split("=", 1)
-        method = method.strip()
+        if "=" in value:
+            method, directory = value.split("=", 1)
+            method = method.strip()
+        else:
+            directory = value
+            method = Path(directory).expanduser().resolve().name
         if not method:
             raise ValueError(f"Invalid --sweep {value!r}; METHOD is empty.")
         sweeps[method] = Path(directory).expanduser()
@@ -172,12 +148,6 @@ def tokenize_texts(texts: Sequence[str], tokenizer) -> list[list[int]]:
     return [tokenizer.encode(text, add_special_tokens=False) for text in texts]
 
 
-def save_histogram(path: Path, histogram: torch.Tensor, *, sparse: bool) -> None:
-    """Store a rank histogram, CSR-compressed for the per-sample case. Avoid storing excesive amounts of zeros."""
-
-    torch.save(histogram.to_sparse_csr() if sparse else histogram, path)
-
-
 def write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -213,8 +183,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     run_dir = run_dir_for(args)
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    histogram_dir = run_dir / "histograms"
-    histogram_dir.mkdir(parents=True, exist_ok=True)
+
+    data_dir = run_dir / "data"
+    if args.per_sample:
+        data_dir.mkdir(parents=True, exist_ok=True)
+
     inventory_payload = inventory(files)
     write_json(run_dir / "inventory.json", inventory_payload)
     print(json.dumps(inventory_payload, indent=2))
@@ -226,24 +199,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     metadata_path = run_dir / "metadata.json"
     evaluation_config = {
         "scorer_model": args.scorer_model,
-        "dtype": args.dtype,
+        "scorer_temperature": args.scorer_temperature,
         "device": args.device,
-        "start_token": args.start_token,
+        "dtype": args.dtype,
         "max_length": args.max_length,
         "batch_size": args.batch_size,
         "rank_position_chunk": args.rank_position_chunk,
-        "scoring_method": args.scoring_method,
-        "num_reference": args.num_reference,
-        "reference_split": args.reference_split,
-        "reference_source": args.reference_source,
-        "cache_dir": args.cache_dir,
         "limit_samples": args.limit_samples,
-        "per_sample": args.per_sample,
-        "rep_penalty": args.rep_penalty,
         "sweeps": {method: str(path) for method, path in sweeps.items()},
     }
-    if args.scoring_method == "entropy_bins":
-        evaluation_config["n_entropy_bins"] = args.n_entropy_bins
     if metadata_path.exists() and not args.force:
         existing_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         existing_config = {key: existing_metadata.get(key) for key in evaluation_config}
@@ -264,79 +228,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     dtype = args.dtype if args.dtype == "auto" else getattr(torch, args.dtype)
     model = AutoModelForCausalLM.from_pretrained(args.scorer_model, dtype=dtype).to(args.device).eval()
 
-    #Load or build reference histogram. The cache is keyed by scoring method and params when necessary.
-    if args.scoring_method == "entropy_bins":
-        scoring_method_tag = f"entropy_bins{args.n_entropy_bins}"
-    elif args.scoring_method == "inv_prob":
-        scoring_method_tag = "weighted"
-    else:
-        scoring_method_tag = "unweighted"
-    """ if args.rep_penalty is not None and args.rep_penalty != 1.0:
-        scoring_method_tag += f"_penalty{args.rep_penalty:g}" """
-    reference_path = run_dir / "reference_rank_histogram.pt"
-    scorer_model_tag = args.scorer_model.replace("/", "_").replace("-", "_")
-    reference_tag = "qwen_texts" if args.reference_source == "qwen_texts" else "owt_modified" if args.reference_source == "owt_modified" else scoring_method_tag
-    cached_reference_path = (
-        args.ref_hist_cache_dir / scorer_model_tag / f"reference_rank_histogram_{reference_tag}_n{args.num_reference}.pt"
-    )
-
-    #If needed load starting token position for scoring.
-    start_token_positions_full = None
-    if args.reference_source == "owt_modified":
-        # Load starting tokens token i is geenrated from reference text i.
-        truncated_texts = json.loads(args.reference_texts_file.read_text())["truncated_texts"]
-        start_token_positions_full = torch.zeros(len(truncated_texts), dtype=torch.int64)
-        for i, text in enumerate(truncated_texts):
-            start_token_positions_full[i] = len(tokenizer.encode(text, add_special_tokens=False))
-
-    start_token_positions_samples = start_token_positions_full[:args.limit_samples] if start_token_positions_full is not None else None 
-    start_token_positions_reference = start_token_positions_full[:args.num_reference] if start_token_positions_full is not None else None
-    
-    if reference_path.exists() and not args.force:
-        reference_histogram = torch.load(
-            reference_path, map_location="cpu", weights_only=True
-        )
-    elif cached_reference_path.exists() and not args.force_ref_hist:
-        print(f"Loading cached reference histogram from {cached_reference_path}")
-        reference_histogram = torch.load(
-            cached_reference_path, map_location="cpu", weights_only=True
-        )
-        torch.save(reference_histogram, reference_path)
-    else:
-        if args.reference_source == "owt_modified":
-            if args.reference_texts_file is None:
-                raise ValueError("Must provide --reference-texts-file for owt_modified reference source")
-            print(f"Loading {args.num_reference} held-out reference documents from {args.reference_texts_file}...")
-            reference_texts = json.loads(args.reference_texts_file.read_text())["reference_texts"]
-            reference_texts = reference_texts[:args.num_reference]
-        else:
-            print(f"Loading {args.num_reference} held-out OpenWebText reference documents...")
-            reference_texts = load_openwebtext_texts(
-                split=args.reference_split,
-                cache_dir=args.cache_dir,
-                limit=args.num_reference,
-            )
-
-        reference_ids = tokenize_texts(reference_texts, tokenizer)
-        _, reference_histogram, _ = score_token_ids(
-            reference_ids,
-            model,
-            tokenizer,
-            batch_size=args.batch_size,
-            max_length=args.max_length,
-            rank_position_chunk=args.rank_position_chunk,
-            device=args.device,
-            description="reference",
-            method=args.scoring_method,
-            n_entropy_bins=args.n_entropy_bins,
-            per_sample=False,
-            start_token_positions=start_token_positions_reference,
-            #rep_penalty=args.rep_penalty,
-        )
-        torch.save(reference_histogram, reference_path)
-        cached_reference_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(reference_histogram, cached_reference_path)
-
     for index, item in enumerate(files, start=1):
         checkpoint_path = checkpoint_dir / f"{item.key}.json"
         if checkpoint_path.exists() and not args.force:
@@ -344,44 +235,47 @@ def main(argv: Sequence[str] | None = None) -> None:
             continue
 
         print(f"[{index}/{len(files)}] evaluating {item.key}")
+
         texts, source = load_generation_file(item, args.limit_samples)
         token_ids = tokenize_texts(texts, tokenizer)
-        gen_ppl, comparison_histogram, model_entropy = score_token_ids(
+
+        #If matched temperature is set, retrieve it from the model (used for finding real temperature)
+        temperature = float(source.get("temperature", item.temperature_label))
+        scorer_temperature = temperature if args.scorer_temperature == "match" else float(args.scorer_temperature)
+
+        result_per_sample = score_tokens_no_rank(
             token_ids,
             model,
             tokenizer,
             batch_size=args.batch_size,
             max_length=args.max_length,
-            start_token=args.start_token,
-            start_token_positions=start_token_positions_samples,
             rank_position_chunk=args.rank_position_chunk,
             device=args.device,
-            description=item.key,
-            method=args.scoring_method,
-            n_entropy_bins=args.n_entropy_bins,
-            per_sample=args.per_sample,
-            rep_penalty=args.rep_penalty,
+            per_sample=True,
+            temperature=scorer_temperature,
         )
-        save_histogram(
-            histogram_dir / f"{item.key}.pt", comparison_histogram, sparse=args.per_sample
-        )
-        temperature = float(source.get("temperature", item.temperature_label))
+        if args.per_sample:
+            torch.save(result_per_sample, data_dir / f"{item.key}.pt")
+
+        totals = result_per_sample.sum(dim=0)
+        total_tokens = float(totals[2].item())
+        gen_ppl = math.exp(float(totals[0].item()) /total_tokens)
+        model_entropy = float(totals[1].item()) /total_tokens
         row = {
             "method": item.method,
             "nfe": item.nfe,
             "temperature": temperature,
             "temperature_label": item.temperature_label,
+            "scorer_temperature": scorer_temperature,
             "source_file": str(item.path),
             "num_samples": len(texts),
+            "num_tokens": total_tokens,
             "source_gen_ppl": source.get("generative_ppl"),
             "source_entropy": source.get("entropy"),
             "gen_ppl": gen_ppl,
             "model_entropy": model_entropy,
+            "kl": math.log(gen_ppl) - model_entropy,
         }
-        if not args.per_sample:
-            row["rank_wasserstein"] = rank_wasserstein_from_histograms(
-                reference_histogram, comparison_histogram, normalize=False
-            )
         row.update(lexical_metrics(texts, token_ids))
         write_json(checkpoint_path, row)
 
